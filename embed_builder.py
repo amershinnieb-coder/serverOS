@@ -3,16 +3,15 @@ from discord import app_commands
 from discord.ext import commands
 
 
-# نافذة عرض الأزرار المتعددة المخصصة
 class CustomMultiButtonsView(discord.ui.View):
 
     def __init__(self, buttons_data):
-        super().__init__(timeout=None)  # الأزرار لا تنتهي أبداً
+        super().__init__(timeout=None)
 
         for label, hidden_text in buttons_data:
             if label and hidden_text:
                 button = discord.ui.Button(
-                    label=label[:80],  # ديسكورد يسمح بـ 80 حرف كحد أقصى لاسم الزر
+                    label=label[:80],
                     style=discord.ButtonStyle.primary,
                     emoji="📌",
                 )
@@ -21,7 +20,6 @@ class CustomMultiButtonsView(discord.ui.View):
 
     def create_callback(self, hidden_text):
         async def button_callback(interaction: discord.Interaction):
-            # الرسالة السرية لكل زر
             await interaction.response.send_message(
                 content=hidden_text, ephemeral=True
             )
@@ -29,40 +27,39 @@ class CustomMultiButtonsView(discord.ui.View):
         return button_callback
 
 
-# نافذة إدخال مخصصة مع ملاحظة إرشادية داخل خانة الكتابة
-class CustomMultiModal(discord.ui.Modal, title="إنشاء إيمبد مع أزرار مخصصة"):
+class EmbedBuilder(commands.Cog):
 
-    def __init__(self, embed_title: str, embed_desc: str):
-        super().__init__()
-        self.embed_title = embed_title
-        self.embed_desc = embed_desc
+    def __init__(self, bot):
+        self.bot = bot
 
-    # خانة الكتابة مع ملاحظة إرشادية بخط خفيف لتذكرك دائماً
-    buttons_input = discord.ui.TextInput(
-        label="اكتب الأزرار هنا (كل زر في سطر)",
-        style=discord.TextStyle.paragraph,
-        placeholder=(
-            "⚠️ ملاحظة للتذكير: اكتب هكذا (اسم الزر : النص السري)\n"
-            "مثال:\n"
-            "القوانين : ممنوع السب أو الإزعاج\n"
-            "الدعم الفني : تواصل معنا هنا"
+    @app_commands.command(
+        name="إنشاء_إيمبد_بأزرار",
+        description=(
+            "[إدارة السيرفر] إرسال إيمبد مع أزرار مخصصة (اكتب كل زر في"
+            " سطر بداخل خانة الأزرار)"
         ),
-        required=True,
-        max_length=2000,
     )
-
-    async def on_submit(self, interaction: discord.Interaction):
+    @app_commands.describe(
+        العنوان="عنوان الإيمبد الرئيسي",
+        الوصف="محتوى ووصف الإيمبد",
+        الأزرار=(
+            "اكتب الأزرار هكذا: (اسم الزر : النص السري) وكل زر في سطر مستقل"
+        ),
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def create_embed(
+        self,
+        interaction: discord.Interaction,
+        العنوان: str,
+        الوصف: str,
+        الأزرار: str,
+    ):
         guild = interaction.guild
-        raw_text = self.buttons_input.value
 
-        # تحليل النص واستخراج الأسماء والنصوص السرية
+        # تحليل الأزرار المدخلة
         buttons_data = []
-        lines = raw_text.split("\n")
+        lines = الأزرار.split("\n")
         for line in lines:
-            # تجاهل أسطر الملاحظات لو المستخدم كتبها أو نسحها بالخطأ
-            if "⚠️" in line or "ملاحظة" in line or "مثال:" in line:
-                continue
-
             if ":" in line:
                 parts = line.split(":", 1)
                 label = parts[0].strip()
@@ -72,22 +69,23 @@ class CustomMultiModal(discord.ui.Modal, title="إنشاء إيمبد مع أز�
 
         if not buttons_data:
             await interaction.response.send_message(
-                "❌ خطأ: يرجى كتابة الأزرار بالشكل الصحيح (الاسم : النص السري)",
+                "❌ خطأ: يرجى كتابة الأزرار بالطريقة الصحيحة (اسم الزر : النص"
+                " السري)",
                 ephemeral=True,
             )
             return
 
         if len(buttons_data) > 5:
             await interaction.response.send_message(
-                "❌ عذراً، الحد الأقصى في هذه النافذة هو 5 أزرار لتسهيل الكتابة!",
+                "❌ عذراً، الحد الأقصى هو 5 أزرار في هذه الرسالة لتجنب الأخطاء!",
                 ephemeral=True,
             )
             return
 
         # بناء الإيمبد
         embed = discord.Embed(
-            title=self.embed_title,
-            description=self.embed_desc,
+            title=العنوان,
+            description=الوصف,
             color=discord.Color.from_rgb(88, 101, 242),
         )
 
@@ -103,35 +101,12 @@ class CustomMultiModal(discord.ui.Modal, title="إنشاء إيمبد مع أز�
             ),
         )
 
-        # إنشاء الأزرار وإرسالها
+        # إرسال الرسالة والأزرار
         view = CustomMultiButtonsView(buttons_data)
         await interaction.channel.send(embed=embed, view=view)
         await interaction.response.send_message(
-            f"✅ تم نشر الإيمبد ومعه ({len(buttons_data)}) أزرار مخصصة بنجاح!",
+            f"✅ تم نشر الإيمبد ومعه ({len(buttons_data)}) أزرار بنجاح!",
             ephemeral=True,
-        )
-
-
-class EmbedBuilder(commands.Cog):
-
-    def __init__(self, bot):
-        self.bot = bot
-
-    @app_commands.command(
-        name="إنشاء_إيمبد_بأزرار",
-        description=(
-            "[إدارة السيرفر] إرسال إيمبد مع أزرار متعددة تحدد أسماءها ونصوصها"
-        ),
-    )
-    @app_commands.describe(
-        العنوان="عنوان الإيمبد الرئيسي", الوصف="محتوى ووصف الإيمبد"
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def create_embed(
-        self, interaction: discord.Interaction, العنوان: str, الوصف: str
-    ):
-        await interaction.response.send_modal(
-            CustomMultiModal(العنوان, الوصف)
         )
 
 
