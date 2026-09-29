@@ -2,8 +2,6 @@ import sqlite3
 import discord
 from discord import app_commands
 from discord.ext import commands
-from io import BytesIO
-from easy_pil import Editor, Font, load_image_async
 
 def get_db_connection():
     conn = sqlite3.connect("serveros.db")
@@ -12,7 +10,11 @@ def get_db_connection():
         CREATE TABLE IF NOT EXISTS welcome_settings (
             guild_id INTEGER PRIMARY KEY,
             channel_id INTEGER,
-            dm_message TEXT
+            welcome_text TEXT,
+            dm_message TEXT,
+            thumbnail_url TEXT,
+            image_url TEXT,
+            use_embed INTEGER DEFAULT 1
         )
     """)
     conn.commit()
@@ -22,116 +24,157 @@ class Welcome(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="إعداد_الترحيب", description="[خاص بالإداريين] تحديد الروم المخصصة لرسائل الترحيب والمغادرة في السيرفر")
-    @app_commands.describe(channel="اختر روم الترحيب العام")
+    # 1. أمر تجربة الترحيب
+    @app_commands.command(name="تجربة_الترحيب", description="[إدارة السيرفر] معاينة وتجربة رسالة الترحيب الحالية وصور الـ GIF والإيمبد بنفسك")
     @app_commands.checks.has_permissions(administrator=True)
-    async def welcome_setup(self, interaction: discord.Interaction, channel: discord.TextChannel):
+    async def test_welcome(self, interaction: discord.Interaction):
+        await interaction.response.send_message("🧪 جاري إرسال معاينة الترحيب الحالية...", ephemeral=True)
+        await self.send_welcome_message(interaction.user)
+
+    # 2. الأمر الشامل لإعداد الترحيب باللغة العربية بالكامل
+    @app_commands.command(name="إعداد_الترحيب", description="[إدارة السيرفر] التحكم الكامل بنظام الترحيب، الصور، الإيمبد، والرسائل")
+    @app_commands.describe(
+        الروم="اختر روم الترحيب العام",
+        نوع_الإيمبد="هل تريد رسالة الترحيب بصيغة Embed فخم أم نص عادي؟",
+        النص="نص الترحيب (استخدم {user} لذكر العضو، {server} لاسم السيرفر، {count} للعدد)",
+        صورة_فوق="رابط صورة مصغرة فوق (تدعم GIF) أو اكتب none للحذف",
+        صورة_تحت="رابط صورة بانر كبيرة تحت (تدعم GIF) أو اكتب none للحذف",
+        رسالة_الخاص="رسالة الخاص التي تصل العضو عند دخوله (اختياري)"
+    )
+    @app_commands.choices(نوع_الإيمبد=[
+        app_commands.Choice(name="نعم (Embed فخم)", value=1),
+        app_commands.Choice(name="لا (نص عادي فقط)", value=0)
+    ])
+    @app_commands.checks.has_permissions(administrator=True)
+    async def configure_welcome(
+        self, 
+        interaction: discord.Interaction, 
+        الروم: discord.TextChannel,
+        نوع_الإيمبد: int = 1,
+        النص: str = None,
+        صورة_فوق: str = None,
+        صورة_تحت: str = None,
+        رسالة_الخاص: str = None
+    ):
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO welcome_settings (guild_id, channel_id) VALUES (?, ?)
-            ON CONFLICT(guild_id) DO UPDATE SET channel_id = ?
-        """, (interaction.guild.id, channel.id, channel.id))
-        conn.commit()
-        conn.close()
         
-        await interaction.response.send_message(f"✅ تم ضبط روم الترحيب العام بنجاح إلى: {channel.mention}", ephemeral=True)
+        # جلب الإعدادات القديمة للحفاظ عليها في حال لم يقم المالك بتعديلها
+        cursor.execute("SELECT welcome_text, dm_message, thumbnail_url, image_url FROM welcome_settings WHERE guild_id = ?", (interaction.guild.id,))
+        old_data = cursor.fetchone()
 
-    @app_commands.command(name="إعداد_رسالة_الخاص", description="[خاص بالإداريين] تخصيص رسالة ترحيبية ترسل للعضو الجديد في الخاص")
-    @app_commands.describe(الرسالة="اكتب محتوى رسالة الترحيب (استخدم {user} لذكر اسم العضو)")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def set_welcome_dm(self, interaction: discord.Interaction, الرسالة: str):
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        final_text = النص if النص else (old_data[0] if old_data and old_data[0] else "أهلاً بك يا {user} في سيرفر **{server}**!")
+        final_dm = رسالة_الخاص if رسالة_الخاص else (old_data[1] if old_data else None)
+        final_thumb = صورة_فوق if صورة_فوق else (old_data[2] if old_data else None)
+        final_img = صورة_تحت if صورة_تحت else (old_data[3] if old_data else None)
+
+        if final_thumb and final_thumb.lower() == "none": final_thumb = None
+        if final_img and final_img.lower() == "none": final_img = None
+
         cursor.execute("""
-            INSERT INTO welcome_settings (guild_id, dm_message) VALUES (?, ?)
-            ON CONFLICT(guild_id) DO UPDATE SET dm_message = ?
-        """, (interaction.guild.id, الرسالة, الرسالة))
+            INSERT INTO welcome_settings (guild_id, channel_id, welcome_text, dm_message, thumbnail_url, image_url, use_embed) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET 
+                channel_id = ?, 
+                welcome_text = ?, 
+                dm_message = ?, 
+                thumbnail_url = ?, 
+                image_url = ?, 
+                use_embed = ?
+        """, (
+            interaction.guild.id, الروم.id, final_text, final_dm, final_thumb, final_img, نوع_الإيمبد,
+            الروم.id, final_text, final_dm, final_thumb, final_img, نوع_الإيمبد
+        ))
+        
         conn.commit()
         conn.close()
 
-        await interaction.response.send_message(f"✅ تم حفظ وتحديث رسالة الترحيب الخاصة (DM) لهذا السيرفر بنجاح!", ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ **تم تحديث إعدادات الترحيب بنجاح!**\n"
+            f"- الروم: {الروم.mention}\n"
+            f"- نظام الإيمبد: {'مفعل (Embed)' if نوع_الإيمبد == 1 else 'معطل (نص عادي)'}\n"
+            f"- استخدم أمر `/تجربة_الترحيب` في أي وقت لمعاينة الشكل!",
+            ephemeral=True
+        )
 
-    @commands.Cog.listener()
-    async def on_member_join(self, member: discord.Member):
+    async def send_welcome_message(self, member: discord.Member):
         guild = member.guild
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT channel_id, dm_message FROM welcome_settings WHERE guild_id = ?", (guild.id,))
+        cursor.execute("SELECT channel_id, welcome_text, dm_message, thumbnail_url, image_url, use_embed FROM welcome_settings WHERE guild_id = ?", (guild.id,))
         row = cursor.fetchone()
         conn.close()
 
-        channel_id = row[0] if row else None
-        custom_dm = row[1] if row else None
+        if not row:
+            return
 
-        # 1. تصميم وصناعة بطاقة الترحيب الفخمة وإرسالها في الروم
+        channel_id, welcome_text, dm_message, thumbnail_url, image_url, use_embed = row
+
         if channel_id:
             channel = guild.get_channel(channel_id)
             if channel:
-                try:
-                    # تصميم البطاقة باستخدام easy-pil
-                    background = Editor("welcome_bg.png") if False else Editor((900, 300)) # افتراضي لون داكن أو خلفية
-                    # إذا لم تتوفر صورة خلفية، نصنع خلفية دكنة فخمة متناسقة مع الديسكورد
-                    background.create_radial_gradient(center=(450, 150), start_radius=10, end_radius=600, color1="#2f3136", color2="#18191c")
-                    
-                    # تحميل أڤاتار العضو بشكل دائري مرتب
-                    avatar_image = await load_image_async(str(member.avatar.url if member.avatar else member.default_avatar.url))
-                    avatar = Editor(avatar_image).resize((130, 130)).circle_image()
-                    
-                    # إضافة الأڤاتار والعناصر على البطاقة
-                    background.paste(avatar, (85, 85))
-                    background.ellipse((85, 85), 130, 130, outline="#5865F2", stroke_width=5) # إطار ملون حول الأڤاتار
-                    
-                    # خطوط الكتابة (تأكد من وجود خط مدعوم أو استخدام الخط الافتراضي)
-                    try:
-                        title_font = Font.poppins(size=35, variant="bold")
-                        sub_font = Font.poppins(size=22, variant="regular")
-                    except:
-                        title_font = Font.load_default(size=35)
-                        sub_font = Font.load_default(size=22)
+                raw_text = welcome_text or "أهلاً بك يا {user} في سيرفر **{server}**!"
+                formatted_text = (
+                    raw_text
+                    .replace("{user}", member.mention)
+                    .replace("{username}", member.name)
+                    .replace("{server}", guild.name)
+                    .replace("{count}", str(guild.member_count))
+                )
 
-                    background.text((250, 95), f"WELCOME TO {guild.name.upper()}", color="#5865F2", font=sub_font)
-                    background.text((250, 130), f"{member.name}", color="#FFFFFF", font=title_font)
-                    background.text((250, 180), f"Member #{guild.member_count}", color="#b9bbbe", font=sub_font)
-
-                    file = discord.File(fp=background.image_bytes, filename="welcome.png")
-
-                    embed = discord.Embed(
-                        description=f"✨ **أهلاً بك يا {member.mention} في سيرفر {guild.name}!**\n\n> نتمنى لك قضاء وقت ممتع معنا، ولا تنسَ مراجعة القوانين لتجنب المخالفات.",
-                        color=0x5865F2
-                    )
-                    embed.set_image(url="attachment://welcome.png")
-                    embed.set_footer(text=f"ID: {member.id} • نورت السيرفر برودك!", icon_url=guild.icon.url if guild.icon else None)
-
-                    await channel.send(embed=embed, file=file)
-                except Exception as e:
-                    # نظام بديل في حال حدث أي خطأ تقني بالصورة لضمان إرسال الترحيب دائماً
+                # إذا كان الإيمبد مفعل
+                if use_embed == 1:
                     embed = discord.Embed(
                         title="✨ انضم إلينا بطل جديد!",
-                        description=f"أهلاً بك يا {member.mention} في سيرفر **{guild.name}**.\n\n🎯 نتمنى لك قضاء أوقات ممتعة معنا!",
-                        color=0x5865F2
+                        description=formatted_text,
+                        color=0x2b2d31
                     )
-                    if member.avatar:
+                    
+                    # الصورة المصغرة (فوق)
+                    if thumbnail_url:
+                        embed.set_thumbnail(url=thumbnail_url)
+                    elif member.avatar:
                         embed.set_thumbnail(url=member.avatar.url)
-                    embed.set_footer(text=f"ID: {member.id}")
-                    await channel.send(embed=embed)
+                    
+                    embed.add_field(name="👥 ترتيب العضو", value=f"#{guild.member_count}", inline=True)
+                    
+                    # الصورة الكبيرة أو المتحركة (تحت في البانر)
+                    if image_url:
+                        embed.set_image(url=image_url)
 
-        # 2. إرسال رسالة الخاص الفخمة للعضو
-        if custom_dm:
+                    embed.set_footer(text=f"ID: {member.id}", icon_url=guild.icon.url if guild.icon else None)
+                    await channel.send(embed=embed)
+                
+                # إذا كان نص عادي بدون إيمبد
+                else:
+                    content_to_send = formatted_text
+                    if image_url:
+                        content_to_send += f"\n{image_url}"
+                    await channel.send(content_to_send)
+
+        # رسالة الخاص (DM)
+        if dm_message:
             try:
-                formatted_dm = custom_dm.replace("{user}", member.mention).replace("{username}", member.name).replace("{server}", guild.name)
+                formatted_dm = (
+                    dm_message
+                    .replace("{user}", member.mention)
+                    .replace("{username}", member.name)
+                    .replace("{server}", guild.name)
+                )
                 dm_embed = discord.Embed(
-                    title=f"🌟 مرحباً بك في عائلة {guild.name}",
+                    title=f"🌟 مرحباً بك في {guild.name}",
                     description=formatted_dm,
-                    color=0x5865F2
+                    color=0x2b2d31
                 )
                 if guild.icon:
                     dm_embed.set_thumbnail(url=guild.icon.url)
-                dm_embed.set_footer(text=f"نتمنى لك رحلة ممتعة معنا!")
-                
                 await member.send(embed=dm_embed)
             except discord.Forbidden:
                 pass
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        await self.send_welcome_message(member)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
@@ -146,19 +189,11 @@ class Welcome(commands.Cog):
             channel = member.guild.get_channel(channel_id)
             if channel:
                 embed = discord.Embed(
-                    title="🚪 وداعاً...",
-                    description=f"غادرنا العضو **{member.name}**، نتمنى له كل التوفيق في طريقه.",
-                    color=0xED4245
+                    title="🚪 غادرنا عضو",
+                    description=f"نودع العضو **{member.name}**، نتمنى له التوفيق.",
+                    color=discord.Color.red()
                 )
-                embed.set_footer(text=f"ID: {member.id}")
                 await channel.send(embed=embed)
-
-    @app_commands.command(name="اختبار_الترحيب", description="[خاص بالإداريين] معاينة وتجربة شكل رسالة الترحيب الحالية")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def welcome_test(self, interaction: discord.Interaction):
-        await interaction.response.send_message("🧪 جاري توليد ومعاينة بطاقة الترحيب والفحص...", ephemeral=True)
-        # محاكاة لحدث الدخول للاختبار الفوري
-        await self.on_member_join(interaction.user)
 
 async def setup(bot):
     await bot.add_cog(Welcome(bot))
